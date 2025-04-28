@@ -1,0 +1,4 @@
+CREATE TABLE board (
+   id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+   content TEXT
+);

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+  PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="board.repository.BoardMapper">
+
+    <insert id="insert" parameterType="board.entitiy.Board" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO board (content) VALUES (#{content})
+    </insert>
+
+    <select id="findById" resultType="board.entitiy.Board" parameterType="int">
+        SELECT id, content FROM board WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultType="board.entitiy.Board">
+        SELECT id, content FROM board
+    </select>
+
+    <update id="update" parameterType="board.entitiy.Board">
+        UPDATE board SET content = #{content} WHERE id = #{id}
+    </update>
+
+    <delete id="delete" parameterType="board.entitiy.Board">
+        DELETE FROM board WHERE id = #{id}
+    </delete>
+
+</mapper>
