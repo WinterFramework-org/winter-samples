@@ -4,15 +4,15 @@ import board.entitiy.Board;
 import board.repository.BoardMapper;
 import froggy.winterframework.beans.factory.annotation.Autowired;
 import froggy.winterframework.stereotype.Controller;
-import froggy.winterframework.web.bind.annotation.HttpMethod;
 import froggy.winterframework.web.bind.annotation.PathVariable;
 import froggy.winterframework.web.bind.annotation.RequestMapping;
+import froggy.winterframework.web.bind.annotation.RequestMethod;
 import froggy.winterframework.web.bind.annotation.RequestParam;
 import froggy.winterframework.web.bind.annotation.ResponseBody;
 import java.util.List;
 
 @Controller
-@RequestMapping(urlPattern = "/board")
+@RequestMapping("/board")
 public class BoardController {
 
     private final BoardMapper boardMapper;
@@ -22,7 +22,7 @@ public class BoardController {
         this.boardMapper = boardMapper;
     }
 
-    @RequestMapping(httpMethod = {HttpMethod.POST})
+    @RequestMapping(method = {RequestMethod.POST})
     @ResponseBody
     public Board addBoard(@RequestParam("content") String content) {
         Board board = new Board();
@@ -31,19 +31,19 @@ public class BoardController {
 
         return board;
     }
-    @RequestMapping(urlPattern = "/{id}", httpMethod = {HttpMethod.GET})
+    @RequestMapping(value = "/{id}", method = {RequestMethod.GET})
     @ResponseBody
     public Board findBoard(@PathVariable("id") int id) {
         return boardMapper.findById(id);
     }
 
-    @RequestMapping(httpMethod = HttpMethod.GET)
+    @RequestMapping(method = RequestMethod.GET)
     @ResponseBody
     public List<Board> findAll() {
         return boardMapper.findAll();
     }
 
-    @RequestMapping(urlPattern = "/{id}", httpMethod = HttpMethod.PATCH)
+    @RequestMapping(value= "/{id}", method = RequestMethod.PATCH)
     @ResponseBody
     public Board updateBoard(@PathVariable("id") int id, @RequestParam("content") String content) {
         Board board = new Board();
@@ -55,7 +55,7 @@ public class BoardController {
         return boardMapper.findById(id);
     }
 
-    @RequestMapping(urlPattern = "/{id}", httpMethod = HttpMethod.DELETE)
+    @RequestMapping(value = "/{id}", method = RequestMethod.DELETE)
     @ResponseBody
     public String deleteBoard(@PathVariable("id") int id) {
         Board board = new Board();
