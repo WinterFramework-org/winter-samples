@@ -9,9 +9,9 @@
       <transactionManager type="JDBC"/>
       <dataSource type="POOLED">
         <property name="driver" value="com.mysql.cj.jdbc.Driver"/>
-        <property name="url" value="jdbc:mysql://localhost:3306/jdbc"/>
-        <property name="username" value="root"/>
-        <property name="password" value="root"/>
+        <property name="url" value="jdbc:mysql://localhost:3306/winter_samples"/>
+        <property name="username" value=""/>
+        <property name="password" value=""/>
       </dataSource>
     </environment>
   </environments>

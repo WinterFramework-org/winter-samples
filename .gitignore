@@ -37,3 +37,7 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+# 개인 DB 설정
+/src/main/resources/application.properties
+/config/*.properties

@@ -1,3 +1,5 @@
+package board;
+
 import froggy.winterframework.boot.WinterApplication;
 
 public class MainApplication {
