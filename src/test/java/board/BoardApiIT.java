@@ -12,6 +12,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,7 +33,7 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
-public class BoardReadIT {
+public class BoardApiIT {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String CONTENT = "조회 검증 " + UUID.randomUUID();
@@ -54,7 +58,7 @@ public class BoardReadIT {
                 fail("테스트 DB에 연결할 수 없습니다. 설정과 서버를 확인하세요. SQLState="
                     + exception.getSQLState());
             }
-            try (InputStream schema = BoardReadIT.class.getResourceAsStream("/sql/schema.sql")) {
+            try (InputStream schema = BoardApiIT.class.getResourceAsStream("/sql/schema.sql")) {
                 assertNotNull(schema);
                 try (Statement statement = database.createStatement()) {
                     for (String sql : new String(readAll(schema), "UTF-8").split(";")) {
@@ -120,6 +124,111 @@ public class BoardReadIT {
             }
         }
         assertTrue("DB에 저장한 게시글이 HTTP 목록에 있어야 합니다.", found);
+    }
+
+    @Test
+    public void createsJsonBoardWithLocationAndCanRetrieveIt() throws Exception {
+        String content = "  JSON 등록\n본문 보존  " + UUID.randomUUID();
+        HttpResult created = request("POST", "/board", jsonContent(content));
+        int id = created.json().path("id").asInt();
+        try {
+            assertEquals(201, created.status);
+            assertTrue(id > 0);
+            assertEquals(content, created.json().path("content").asText());
+            assertEquals("/board/" + id, created.headers.get("location"));
+            assertEquals(content, getJson("/board/" + id).path("content").asText());
+        } finally {
+            removeTestBoard(id);
+        }
+    }
+
+    @Test
+    public void updatesJsonBoardAndPreservesContent() throws Exception {
+        HttpResult created = request("POST", "/board", jsonContent("수정 전 " + UUID.randomUUID()));
+        assertEquals(201, created.status);
+        int id = created.json().path("id").asInt();
+        String content = "  수정\n본문\t보존  ";
+        try {
+            HttpResult updated = request("PATCH", "/board/" + id, jsonContent(content));
+            assertEquals(200, updated.status);
+            assertEquals(id, updated.json().path("id").asInt());
+            assertEquals(content, updated.json().path("content").asText());
+            assertEquals(content, getJson("/board/" + id).path("content").asText());
+        } finally {
+            removeTestBoard(id);
+        }
+    }
+
+    @Test
+    public void deletesBoardWithoutResponseBodyAndRemovesItFromList() throws Exception {
+        HttpResult created = request("POST", "/board", jsonContent("삭제 검증 " + UUID.randomUUID()));
+        assertEquals(201, created.status);
+        int id = created.json().path("id").asInt();
+        try {
+            HttpResult deleted = request("DELETE", "/board/" + id, null);
+            assertEquals(204, deleted.status);
+            assertEquals("", deleted.body);
+            assertError(request("GET", "/board/" + id, null), 404, "NOT_FOUND", "/board/" + id);
+            for (JsonNode board : getJson("/board")) {
+                assertTrue("삭제한 게시글이 목록에 남으면 안 됩니다.", board.path("id").asInt() != id);
+            }
+        } finally {
+            removeTestBoard(id);
+        }
+    }
+
+    @Test
+    public void rejectsInvalidJsonAndBlankContentOnCreateAndUpdate() throws Exception {
+        int count = getJson("/board").size();
+        String[] invalidBodies = {null, "", " \t\r\n ", "null", " \t null \r\n ",
+            "\"null\"", "None", "\"None\"", "{}", "{\"content\":null}",
+            jsonContent(""), jsonContent(" \t\r\n "), "{broken"};
+        for (String method : new String[]{"POST", "PATCH"}) {
+            String path = method.equals("POST") ? "/board" : "/board/" + boardId;
+            for (String body : invalidBodies) {
+                HttpResult result = request(method, path, body);
+                assertError(result, 400, "BAD_REQUEST", path);
+                if (body != null && (body.equals("{}") || body.startsWith("{\"content\":"))) {
+                    JsonNode errors = result.json().path("errors");
+                    assertTrue("DTO 검증 오류 정보가 있어야 합니다.", errors.isArray());
+                    assertEquals("content", errors.get(0).path("field").asText());
+                }
+            }
+        }
+        assertEquals(count, getJson("/board").size());
+        assertEquals(CONTENT, getJson("/board/" + boardId).path("content").asText());
+    }
+
+    @Test
+    public void returnsNotFoundForMissingBoardOnReadUpdateAndDelete() throws Exception {
+        for (String method : new String[]{"GET", "PATCH", "DELETE"}) {
+            String body = method.equals("PATCH") ? jsonContent("없는 게시글 수정") : null;
+            assertError(request(method, "/board/0", body), 404, "NOT_FOUND", "/board/0");
+        }
+    }
+
+    @Test
+    public void explainsActualStorageFailureWithoutExposingDatabaseDetails() throws Exception {
+        String content = new String(new char[70000]).replace('\0', 'x');
+        int count = getJson("/board").size();
+        HttpResult result = request("POST", "/board", jsonContent(content));
+        assertError(result, 500, "BOARD_STORAGE_ERROR", "/board");
+        assertEquals("게시글을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
+            result.json().path("message").asText());
+        assertTrue(!result.body.contains("jdbc:mysql"));
+        assertTrue(!result.body.contains("INSERT INTO"));
+        assertEquals(count, getJson("/board").size());
+    }
+
+    private static void assertError(HttpResult result, int status, String code, String path)
+        throws Exception {
+        assertEquals(status, result.status);
+        assertTrue(result.headers.get("content-type").startsWith("application/json"));
+        JsonNode body = result.json();
+        assertEquals(status, body.path("status").asInt());
+        assertEquals(code, body.path("code").asText());
+        assertTrue(!body.path("message").asText().isEmpty());
+        assertEquals(path, body.path("path").asText());
     }
 
     @AfterClass
@@ -189,6 +298,67 @@ public class BoardReadIT {
             }
         } finally {
             connection.disconnect();
+        }
+    }
+
+    private static String jsonContent(String content) throws Exception {
+        Map<String, String> body = new LinkedHashMap<>();
+        body.put("content", content);
+        return JSON.writeValueAsString(body);
+    }
+
+    private static void removeTestBoard(int id) throws Exception {
+        if (id > 0) {
+            try (PreparedStatement delete = database.prepareStatement("DELETE FROM board WHERE id = ?")) {
+                delete.setInt(1, id);
+                delete.executeUpdate();
+            }
+        }
+    }
+
+    private static HttpResult request(String method, String path, String body) throws Exception {
+        URL address = new URL(baseUrl);
+        byte[] payload = body == null ? new byte[0] : body.getBytes(StandardCharsets.UTF_8);
+        try (Socket socket = new Socket(address.getHost(), address.getPort())) {
+            socket.setSoTimeout(5000);
+            String headers = method + " " + path + " HTTP/1.0\r\n"
+                + "Host: localhost\r\nAccept: application/json\r\n"
+                + "Content-Type: application/json; charset=UTF-8\r\n"
+                + "Content-Length: " + payload.length + "\r\nConnection: close\r\n\r\n";
+            OutputStream output = socket.getOutputStream();
+            output.write(headers.getBytes(StandardCharsets.US_ASCII));
+            output.write(payload);
+            output.flush();
+            String response = new String(readAll(socket.getInputStream()), StandardCharsets.UTF_8);
+            int boundary = response.indexOf("\r\n\r\n");
+            assertTrue("HTTP 응답 헤더가 있어야 합니다.", boundary >= 0);
+            String[] lines = response.substring(0, boundary).split("\r\n");
+            int status = Integer.parseInt(lines[0].split(" ")[1]);
+            Map<String, String> responseHeaders = new LinkedHashMap<>();
+            for (int i = 1; i < lines.length; i++) {
+                int colon = lines[i].indexOf(':');
+                if (colon > 0) {
+                    responseHeaders.put(lines[i].substring(0, colon).toLowerCase(java.util.Locale.ROOT),
+                        lines[i].substring(colon + 1).trim());
+                }
+            }
+            return new HttpResult(status, responseHeaders, response.substring(boundary + 4));
+        }
+    }
+
+    private static class HttpResult {
+        private final int status;
+        private final Map<String, String> headers;
+        private final String body;
+
+        private HttpResult(int status, Map<String, String> headers, String body) {
+            this.status = status;
+            this.headers = headers;
+            this.body = body;
+        }
+
+        private JsonNode json() throws Exception {
+            return JSON.readTree(body);
         }
     }
 
