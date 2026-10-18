@@ -18,5 +18,6 @@
 
   <mappers>
     <mapper resource="mappers/BoardMapper.xml"/>
+    <mapper resource="mappers/BoardHistoryMapper.xml"/>
   </mappers>
 </configuration>

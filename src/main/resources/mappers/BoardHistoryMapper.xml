@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+  PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="board.repository.BoardHistoryMapper">
+
+    <insert id="insert">
+        INSERT INTO board_history (board_id, previous_content, new_content)
+        VALUES (#{boardId}, #{history.previousContent}, #{history.newContent})
+    </insert>
+
+    <select id="findByBoardId" resultType="board.entitiy.BoardHistory" parameterType="int">
+        SELECT id, previous_content AS previousContent, new_content AS newContent,
+            changed_at AS changedAt
+        FROM board_history WHERE board_id = #{boardId}
+        ORDER BY changed_at DESC, id DESC
+    </select>
+
+</mapper>

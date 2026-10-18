@@ -13,6 +13,10 @@
         SELECT id, content FROM board WHERE id = #{id}
     </select>
 
+    <select id="findByIdForUpdate" resultType="board.entitiy.Board" parameterType="int">
+        SELECT id, content FROM board WHERE id = #{id} FOR UPDATE
+    </select>
+
     <select id="findAll" resultType="board.entitiy.Board">
         SELECT id, content FROM board
     </select>

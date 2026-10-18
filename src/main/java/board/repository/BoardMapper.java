@@ -11,6 +11,8 @@ public interface BoardMapper {
 
     Board findById(int id);
 
+    Board findByIdForUpdate(int id);
+
     List<Board> findAll();
 
     void update(Board board);

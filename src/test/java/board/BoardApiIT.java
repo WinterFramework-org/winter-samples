@@ -28,6 +28,10 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Properties;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -110,6 +114,7 @@ public class BoardApiIT {
         JsonNode board = getJson("/board/" + boardId);
         assertEquals(boardId, board.get("id").asInt());
         assertEquals(CONTENT, board.get("content").asText());
+        assertEquals(2, board.size());
     }
 
     @Test
@@ -120,6 +125,7 @@ public class BoardApiIT {
         for (JsonNode board : boards) {
             if (board.get("id").asInt() == boardId) {
                 assertEquals(CONTENT, board.get("content").asText());
+                assertEquals(2, board.size());
                 found = true;
             }
         }
@@ -154,6 +160,14 @@ public class BoardApiIT {
             assertEquals(id, updated.json().path("id").asInt());
             assertEquals(content, updated.json().path("content").asText());
             assertEquals(content, getJson("/board/" + id).path("content").asText());
+            JsonNode history = getJson("/board/" + id + "/history");
+            assertEquals(1, history.size());
+            assertEquals(created.json().path("content").asText(),
+                history.get(0).path("previousContent").asText());
+            assertEquals(content, history.get(0).path("newContent").asText());
+            assertEquals(4, history.get(0).size());
+            assertTrue(history.get(0).path("id").asLong() > 0);
+            java.time.LocalDateTime.parse(history.get(0).path("changedAt").asText());
         } finally {
             removeTestBoard(id);
         }
@@ -165,10 +179,23 @@ public class BoardApiIT {
         assertEquals(201, created.status);
         int id = created.json().path("id").asInt();
         try {
+            assertEquals(200, request("PATCH", "/board/" + id,
+                jsonContent("삭제 전 이력")).status);
+            assertEquals(1, getJson("/board/" + id + "/history").size());
             HttpResult deleted = request("DELETE", "/board/" + id, null);
             assertEquals(204, deleted.status);
             assertEquals("", deleted.body);
             assertError(request("GET", "/board/" + id, null), 404, "NOT_FOUND", "/board/" + id);
+            assertError(request("GET", "/board/" + id + "/history", null),
+                404, "NOT_FOUND", "/board/" + id + "/history");
+            try (PreparedStatement query = database.prepareStatement(
+                "SELECT COUNT(*) FROM board_history WHERE board_id = ?")) {
+                query.setInt(1, id);
+                try (ResultSet rows = query.executeQuery()) {
+                    assertTrue(rows.next());
+                    assertEquals("게시글 삭제 시 이력도 삭제되어야 합니다.", 0, rows.getInt(1));
+                }
+            }
             for (JsonNode board : getJson("/board")) {
                 assertTrue("삭제한 게시글이 목록에 남으면 안 됩니다.", board.path("id").asInt() != id);
             }
@@ -191,7 +218,11 @@ public class BoardApiIT {
                 if (body != null && (body.equals("{}") || body.startsWith("{\"content\":"))) {
                     JsonNode errors = result.json().path("errors");
                     assertTrue("DTO 검증 오류 정보가 있어야 합니다.", errors.isArray());
-                    assertEquals("content", errors.get(0).path("field").asText());
+                    boolean contentError = false;
+                    for (JsonNode error : errors) {
+                        contentError |= "content".equals(error.path("field").asText());
+                    }
+                    assertTrue("content 필드의 검증 오류가 있어야 합니다.", contentError);
                 }
             }
         }
@@ -218,6 +249,167 @@ public class BoardApiIT {
         assertTrue(!result.body.contains("jdbc:mysql"));
         assertTrue(!result.body.contains("INSERT INTO"));
         assertEquals(count, getJson("/board").size());
+    }
+
+    @Test
+    public void returnsEmptyHistoryForExistingBoardAndNotFoundForMissingBoard() throws Exception {
+        JsonNode history = getJson("/board/" + boardId + "/history");
+        assertTrue(history.isArray());
+        assertEquals(0, history.size());
+        assertError(request("GET", "/board/0/history", null), 404, "NOT_FOUND", "/board/0/history");
+    }
+
+    @Test
+    public void doesNotCreateHistoryForIdenticalContent() throws Exception {
+        String original = "  같은 본문\n공백 보존  ";
+        HttpResult created = request("POST", "/board", jsonContent(original));
+        assertEquals(201, created.status);
+        int id = created.json().path("id").asInt();
+        String path = "/board/" + id;
+        try {
+            HttpResult unchanged = request("PATCH", path, jsonContent(original));
+            assertEquals(200, unchanged.status);
+            assertEquals(original, unchanged.json().path("content").asText());
+            assertEquals(0, getJson(path + "/history").size());
+            assertEquals(200, request("PATCH", path, jsonContent(original + " ")).status);
+            assertEquals(original + " ", getJson(path).path("content").asText());
+            assertEquals(1, getJson(path + "/history").size());
+        } finally {
+            removeTestBoard(id);
+        }
+    }
+
+    @Test
+    public void listsHistoryNewestFirstIncludingEqualTimestamps() throws Exception {
+        HttpResult created = request("POST", "/board", jsonContent("처음"));
+        assertEquals(201, created.status);
+        int id = created.json().path("id").asInt();
+        String path = "/board/" + id;
+        try {
+            assertEquals(200, request("PATCH", path, jsonContent("두 번째")).status);
+            assertEquals(200, request("PATCH", path, jsonContent("세 번째")).status);
+            JsonNode history = getJson(path + "/history");
+            assertEquals(2, history.size());
+            assertEquals("두 번째", history.get(0).path("previousContent").asText());
+            assertEquals("세 번째", history.get(0).path("newContent").asText());
+            assertEquals("처음", history.get(1).path("previousContent").asText());
+            try (PreparedStatement timestamps = database.prepareStatement(
+                "UPDATE board_history SET changed_at = '2026-01-01 00:00:00' WHERE board_id = ?")) {
+                timestamps.setInt(1, id);
+                assertEquals(2, timestamps.executeUpdate());
+            }
+            JsonNode tied = getJson(path + "/history");
+            assertTrue(tied.get(0).path("id").asLong() > tied.get(1).path("id").asLong());
+            assertEquals("세 번째", tied.get(0).path("newContent").asText());
+        } finally {
+            removeTestBoard(id);
+        }
+    }
+
+    @Test
+    public void rollsBackContentWhenHistoryInsertFails() throws Exception {
+        String original = UUID.randomUUID().toString();
+        HttpResult created = request("POST", "/board", jsonContent(original));
+        assertEquals(201, created.status);
+        int id = created.json().path("id").asInt();
+        String path = "/board/" + id;
+        String constraint = "it_history_failure_" + UUID.randomUUID().toString().replace("-", "");
+        boolean constraintAdded = false;
+        try {
+            // 이 테스트의 고유한 이전 본문만 거부해 이력 INSERT를 실패시킨다.
+            try (Statement statement = database.createStatement()) {
+                statement.execute("ALTER TABLE board_history ADD CONSTRAINT " + constraint
+                    + " CHECK (previous_content <> '" + original + "')");
+                constraintAdded = true;
+            }
+            HttpResult failed = request("PATCH", path, jsonContent("롤백될 본문"));
+            assertError(failed, 500, "BOARD_STORAGE_ERROR", path);
+            assertEquals("게시글을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
+                failed.json().path("message").asText());
+            assertTrue(!failed.body.contains(constraint));
+            assertTrue(!failed.body.contains("INSERT INTO"));
+            assertEquals(original, getJson(path).path("content").asText());
+            assertEquals(0, getJson(path + "/history").size());
+            try (Statement statement = database.createStatement()) {
+                statement.execute("ALTER TABLE board_history DROP CHECK " + constraint);
+                constraintAdded = false;
+            }
+            assertEquals(200, request("PATCH", path, jsonContent("다시 수정")).status);
+            assertEquals(1, getJson(path + "/history").size());
+        } finally {
+            try {
+                if (constraintAdded) {
+                    try (Statement statement = database.createStatement()) {
+                        statement.execute("ALTER TABLE board_history DROP CHECK " + constraint);
+                    }
+                }
+            } finally {
+                removeTestBoard(id);
+            }
+        }
+    }
+
+    @Test
+    public void serializesConcurrentUpdatesAndRecordsActualPreviousContent() throws Exception {
+        String original = "동시 수정 전";
+        HttpResult created = request("POST", "/board", jsonContent(original));
+        assertEquals(201, created.status);
+        int id = created.json().path("id").asInt();
+        String path = "/board/" + id;
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        try {
+            database.setAutoCommit(false);
+            try (PreparedStatement lock = database.prepareStatement(
+                "SELECT id FROM board WHERE id = ? FOR UPDATE")) {
+                lock.setInt(1, id);
+                try (ResultSet row = lock.executeQuery()) {
+                    assertTrue(row.next());
+                }
+            }
+            Future<HttpResult> first = executor.submit(() -> {
+                ready.countDown();
+                return request("PATCH", path, jsonContent("첫 번째 요청"));
+            });
+            Future<HttpResult> second = executor.submit(() -> {
+                ready.countDown();
+                return request("PATCH", path, jsonContent("두 번째 요청"));
+            });
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            for (Future<HttpResult> pending : java.util.Arrays.asList(first, second)) {
+                try {
+                    pending.get(250, TimeUnit.MILLISECONDS);
+                    fail("행 잠금이 해제될 때까지 수정 요청이 대기해야 합니다.");
+                } catch (java.util.concurrent.TimeoutException expected) {
+                    // 별도 DB 연결의 잠금을 유지한 동안 HTTP 수정 완료를 막는다.
+                }
+            }
+            assertEquals(original, getJson(path).path("content").asText());
+            database.commit();
+            database.setAutoCommit(true);
+            assertEquals(200, first.get(10, TimeUnit.SECONDS).status);
+            assertEquals(200, second.get(10, TimeUnit.SECONDS).status);
+            JsonNode history = getJson(path + "/history");
+            assertEquals(2, history.size());
+            assertEquals(original, history.get(1).path("previousContent").asText());
+            String earlier = history.get(1).path("newContent").asText();
+            String later = history.get(0).path("newContent").asText();
+            assertTrue((earlier.equals("첫 번째 요청") && later.equals("두 번째 요청"))
+                || (earlier.equals("두 번째 요청") && later.equals("첫 번째 요청")));
+            assertEquals(earlier, history.get(0).path("previousContent").asText());
+            assertEquals(later, getJson(path).path("content").asText());
+        } finally {
+            try {
+                if (!database.getAutoCommit()) {
+                    database.rollback();
+                }
+            } finally {
+                database.setAutoCommit(true);
+                executor.shutdownNow();
+                executor.awaitTermination(5, TimeUnit.SECONDS);
+                removeTestBoard(id);
+            }
+        }
     }
 
     private static void assertError(HttpResult result, int status, String code, String path)

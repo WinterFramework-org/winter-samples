@@ -2,6 +2,7 @@ package board.controller;
 
 import board.dto.BoardRequest;
 import board.entitiy.Board;
+import board.entitiy.BoardHistory;
 import board.service.BoardNotFoundException;
 import board.service.BoardService;
 import board.service.BoardStorageException;
@@ -60,6 +61,12 @@ public class BoardController {
     public ResponseEntity<Board> updateBoard(
         @PathVariable("id") int id, @Valid @RequestBody BoardRequest request) {
         return ResponseEntity.ok(boardService.update(id, request.getContent()));
+    }
+
+    @RequestMapping(value = "/{id}/history", method = RequestMethod.GET)
+    @ResponseBody
+    public List<BoardHistory> findHistory(@PathVariable("id") int id) {
+        return boardService.findHistory(id);
     }
 
     @RequestMapping(value = "/{id}", method = RequestMethod.DELETE)
