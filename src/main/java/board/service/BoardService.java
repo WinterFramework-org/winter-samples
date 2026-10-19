@@ -12,7 +12,7 @@ public interface BoardService {
 
     List<Board> findAll();
 
-    Board update(int id, String content);
+    Board update(int id, String content, String ifMatch, boolean repeatedIfMatch);
 
     List<BoardHistory> findHistory(int id);
 

@@ -2,6 +2,7 @@ package board.service;
 
 import board.entitiy.Board;
 import board.entitiy.BoardHistory;
+import board.http.BoardEtag;
 import board.repository.BoardHistoryMapper;
 import board.repository.BoardMapper;
 import froggy.winterframework.beans.factory.annotation.Autowired;
@@ -50,12 +51,13 @@ public class BoardServiceImpl implements BoardService {
 
     @Override
     @Transactional
-    public Board update(int id, String content) {
+    public Board update(int id, String content, String ifMatch, boolean repeatedIfMatch) {
         try {
             Board previous = boardMapper.findByIdForUpdate(id);
             if (previous == null) {
                 throw new BoardNotFoundException();
             }
+            BoardEtag.requireMatch(ifMatch, repeatedIfMatch, previous.getContent());
             if (previous.getContent().equals(content)) {
                 return previous;
             }

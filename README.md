@@ -44,17 +44,22 @@ curl -i -H 'Accept: application/json' -H 'Content-Type: application/json' \
 ```http
 HTTP/1.1 201 Created
 Location: /board/1
+ETag: "ba48808eb5d07dfd732bcb4f490d0edb7110e09a01924d3a8c91ed2ea1c3088b"
 Content-Type: application/json
 
 {"id":1,"content":"게시글 본문"}
 ```
+
+개별 조회·등록·수정 응답은 본문 기반 `ETag`를 제공합니다. `PATCH /board/{id}`로 수정할 때 응답에서 받은 ETag를 큰따옴표까지 그대로 `If-Match` 헤더에 전달하세요.
+
+구체적인 ETag 하나만 허용하며, 여러 값과 `*`는 받지 않습니다. 헤더 누락은 `428`, 잘못된 값은 `400`, 현재 내용과 불일치는 `412`를 반환합니다. `412`를 받으면 다시 조회한 뒤 수정하세요.
 
 ## 코드 안내
 
 시작점, 요청 처리, 서비스, DB 매핑 순서로 코드를 살펴볼 수 있습니다.
 
 - [MainApplication.java](src/main/java/board/MainApplication.java): `WinterApplication.run()`으로 애플리케이션을 시작합니다.
-- [BoardController.java](src/main/java/board/controller/BoardController.java): 요청 매핑, 생성자 주입과 `@Valid @RequestBody`를 통한 JSON 입력 검증을 사용합니다.
+- [BoardController.java](src/main/java/board/controller/BoardController.java): 요청 매핑, 생성자 주입, `@Valid @RequestBody` 입력 검증과 `@RequestHeader` 헤더 바인딩을 사용합니다.
 - [BoardRequest.java](src/main/java/board/dto/BoardRequest.java): `@NotBlank`로 게시글 본문의 필수 입력과 공백 검증 조건을 선언합니다.
 - [BoardServiceImpl.java](src/main/java/board/service/BoardServiceImpl.java): 게시글 처리 로직을 구현하며, `@Transactional`로 본문 수정과 이력 저장을 하나의 트랜잭션으로 처리합니다.
 - [BoardMapper.java](src/main/java/board/repository/BoardMapper.java): `@Mapper` 인터페이스로 DB 작업을 선언합니다.

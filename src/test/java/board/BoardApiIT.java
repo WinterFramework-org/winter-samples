@@ -110,6 +110,91 @@ public class BoardApiIT {
     }
 
     @Test
+    public void providesContentEtagOnCreateAndSingleRead() throws Exception {
+        HttpResult created = request("POST", "/board", jsonContent("abc"));
+        int id = created.json().path("id").asInt();
+        try {
+            assertEquals(201, created.status);
+            String expected = "\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"";
+            assertEquals(expected, created.headers.get("etag"));
+            assertEquals("/board/" + id, created.headers.get("location"));
+            HttpResult found = request("GET", "/board/" + id, null);
+            assertEquals(200, found.status);
+            assertEquals(expected, found.headers.get("etag"));
+            assertEquals(2, found.json().size());
+            assertEquals("abc", found.json().path("content").asText());
+        } finally {
+            removeTestBoard(id);
+        }
+    }
+
+    @Test
+    public void requiresSingleMatchingIfMatchBeforeUpdating() throws Exception {
+        HttpResult created = request("POST", "/board", jsonContent("조건 검사 전"));
+        int id = created.json().path("id").asInt();
+        String path = "/board/" + id;
+        String tag = created.headers.get("etag");
+        try {
+            HttpResult missing = request("PATCH", path, jsonContent("수정"));
+            assertError(missing, 428, "IF_MATCH_REQUIRED", path);
+            assertEquals("no-store", missing.headers.get("cache-control"));
+            for (String value : new String[]{"", " ", "*", tag + ", " + tag,
+                "unquoted", "\"unterminated", tag + " trailing", "w/" + tag}) {
+                assertError(request("PATCH", path, jsonContent("수정"), value),
+                    400, "INVALID_IF_MATCH", path);
+            }
+            assertError(request("PATCH", path, jsonContent("수정"), tag, tag),
+                400, "INVALID_IF_MATCH", path);
+            for (String value : new String[]{"\"other\"", "W/" + tag, "\"\"", "\"tag,with,commas\""}) {
+                assertError(request("PATCH", path, jsonContent("수정"), value),
+                    412, "IF_MATCH_FAILED", path);
+            }
+            assertEquals("조건 검사 전", getJson(path).path("content").asText());
+            assertEquals(0, getJson(path + "/history").size());
+            HttpResult updated = request("PATCH", path, jsonContent("새 본문"), " \t" + tag + " \t");
+            assertEquals(200, updated.status);
+            assertTrue(!tag.equals(updated.headers.get("etag")));
+            assertError(request("PATCH", path, jsonContent("새 본문"), tag),
+                412, "IF_MATCH_FAILED", path);
+            assertEquals("새 본문", getJson(path).path("content").asText());
+            assertEquals(1, getJson(path + "/history").size());
+        } finally {
+            removeTestBoard(id);
+        }
+    }
+
+    @Test
+    public void preservesEtagForIdenticalAndRestoredUnicodeContent() throws Exception {
+        String original = "  한글😀\n끝  ";
+        String expected = "\"6579b3a866208e9c6877a1eb64a767a24c6d5e876caeca867037ac608d4f89cd\"";
+        HttpResult created = request("POST", "/board", jsonContent(original));
+        int id = created.json().path("id").asInt();
+        String path = "/board/" + id;
+        try {
+            assertEquals(201, created.status);
+            assertEquals(expected, created.headers.get("etag"));
+            HttpResult unchanged = request("PATCH", path, jsonContent(original), expected);
+            assertEquals(200, unchanged.status);
+            assertEquals(expected, unchanged.headers.get("etag"));
+            assertEquals(0, getJson(path + "/history").size());
+            HttpResult changed = request("PATCH", path, jsonContent("다른 본문"), expected);
+            assertEquals(200, changed.status);
+            assertTrue(!expected.equals(changed.headers.get("etag")));
+            HttpResult restored = request("PATCH", path, jsonContent(original),
+                changed.headers.get("etag"));
+            assertEquals(200, restored.status);
+            assertEquals(expected, restored.headers.get("etag"));
+            assertEquals(original, restored.json().path("content").asText());
+            assertEquals(200, request("PATCH", path, jsonContent("복원 후 수정"), expected).status);
+            assertEquals(3, getJson(path + "/history").size());
+            assertTrue(!request("GET", "/board", null).headers.containsKey("etag"));
+            assertTrue(!request("GET", path + "/history", null).headers.containsKey("etag"));
+        } finally {
+            removeTestBoard(id);
+        }
+    }
+
+    @Test
     public void findsStoredBoardThroughHttp() throws Exception {
         JsonNode board = getJson("/board/" + boardId);
         assertEquals(boardId, board.get("id").asInt());
@@ -155,7 +240,8 @@ public class BoardApiIT {
         int id = created.json().path("id").asInt();
         String content = "  수정\n본문\t보존  ";
         try {
-            HttpResult updated = request("PATCH", "/board/" + id, jsonContent(content));
+            HttpResult updated = request("PATCH", "/board/" + id, jsonContent(content),
+                created.headers.get("etag"));
             assertEquals(200, updated.status);
             assertEquals(id, updated.json().path("id").asInt());
             assertEquals(content, updated.json().path("content").asText());
@@ -180,7 +266,7 @@ public class BoardApiIT {
         int id = created.json().path("id").asInt();
         try {
             assertEquals(200, request("PATCH", "/board/" + id,
-                jsonContent("삭제 전 이력")).status);
+                jsonContent("삭제 전 이력"), created.headers.get("etag")).status);
             assertEquals(1, getJson("/board/" + id + "/history").size());
             HttpResult deleted = request("DELETE", "/board/" + id, null);
             assertEquals(204, deleted.status);
@@ -267,11 +353,14 @@ public class BoardApiIT {
         int id = created.json().path("id").asInt();
         String path = "/board/" + id;
         try {
-            HttpResult unchanged = request("PATCH", path, jsonContent(original));
+            HttpResult unchanged = request("PATCH", path, jsonContent(original),
+                created.headers.get("etag"));
             assertEquals(200, unchanged.status);
             assertEquals(original, unchanged.json().path("content").asText());
+            assertEquals(created.headers.get("etag"), unchanged.headers.get("etag"));
             assertEquals(0, getJson(path + "/history").size());
-            assertEquals(200, request("PATCH", path, jsonContent(original + " ")).status);
+            assertEquals(200, request("PATCH", path, jsonContent(original + " "),
+                created.headers.get("etag")).status);
             assertEquals(original + " ", getJson(path).path("content").asText());
             assertEquals(1, getJson(path + "/history").size());
         } finally {
@@ -286,8 +375,8 @@ public class BoardApiIT {
         int id = created.json().path("id").asInt();
         String path = "/board/" + id;
         try {
-            assertEquals(200, request("PATCH", path, jsonContent("두 번째")).status);
-            assertEquals(200, request("PATCH", path, jsonContent("세 번째")).status);
+            assertEquals(200, patchWithCurrentEtag(path, jsonContent("두 번째")).status);
+            assertEquals(200, patchWithCurrentEtag(path, jsonContent("세 번째")).status);
             JsonNode history = getJson(path + "/history");
             assertEquals(2, history.size());
             assertEquals("두 번째", history.get(0).path("previousContent").asText());
@@ -322,7 +411,8 @@ public class BoardApiIT {
                     + " CHECK (previous_content <> '" + original + "')");
                 constraintAdded = true;
             }
-            HttpResult failed = request("PATCH", path, jsonContent("롤백될 본문"));
+            HttpResult failed = request("PATCH", path, jsonContent("롤백될 본문"),
+                created.headers.get("etag"));
             assertError(failed, 500, "BOARD_STORAGE_ERROR", path);
             assertEquals("게시글을 저장하지 못했습니다. 잠시 후 다시 시도해주세요.",
                 failed.json().path("message").asText());
@@ -334,7 +424,8 @@ public class BoardApiIT {
                 statement.execute("ALTER TABLE board_history DROP CHECK " + constraint);
                 constraintAdded = false;
             }
-            assertEquals(200, request("PATCH", path, jsonContent("다시 수정")).status);
+            assertEquals(200, request("PATCH", path, jsonContent("다시 수정"),
+                created.headers.get("etag")).status);
             assertEquals(1, getJson(path + "/history").size());
         } finally {
             try {
@@ -350,7 +441,7 @@ public class BoardApiIT {
     }
 
     @Test
-    public void serializesConcurrentUpdatesAndRecordsActualPreviousContent() throws Exception {
+    public void acceptsOnlyOneConcurrentUpdateWithTheSameEtag() throws Exception {
         String original = "동시 수정 전";
         HttpResult created = request("POST", "/board", jsonContent(original));
         assertEquals(201, created.status);
@@ -369,11 +460,11 @@ public class BoardApiIT {
             }
             Future<HttpResult> first = executor.submit(() -> {
                 ready.countDown();
-                return request("PATCH", path, jsonContent("첫 번째 요청"));
+                return request("PATCH", path, jsonContent("첫 번째 요청"), created.headers.get("etag"));
             });
             Future<HttpResult> second = executor.submit(() -> {
                 ready.countDown();
-                return request("PATCH", path, jsonContent("두 번째 요청"));
+                return request("PATCH", path, jsonContent("두 번째 요청"), created.headers.get("etag"));
             });
             assertTrue(ready.await(5, TimeUnit.SECONDS));
             for (Future<HttpResult> pending : java.util.Arrays.asList(first, second)) {
@@ -387,17 +478,21 @@ public class BoardApiIT {
             assertEquals(original, getJson(path).path("content").asText());
             database.commit();
             database.setAutoCommit(true);
-            assertEquals(200, first.get(10, TimeUnit.SECONDS).status);
-            assertEquals(200, second.get(10, TimeUnit.SECONDS).status);
+            HttpResult firstResult = first.get(10, TimeUnit.SECONDS);
+            HttpResult secondResult = second.get(10, TimeUnit.SECONDS);
+            assertTrue((firstResult.status == 200 && secondResult.status == 412)
+                || (firstResult.status == 412 && secondResult.status == 200));
+            HttpResult success = firstResult.status == 200 ? firstResult : secondResult;
+            assertError(firstResult.status == 412 ? firstResult : secondResult,
+                412, "IF_MATCH_FAILED", path);
             JsonNode history = getJson(path + "/history");
-            assertEquals(2, history.size());
-            assertEquals(original, history.get(1).path("previousContent").asText());
-            String earlier = history.get(1).path("newContent").asText();
-            String later = history.get(0).path("newContent").asText();
-            assertTrue((earlier.equals("첫 번째 요청") && later.equals("두 번째 요청"))
-                || (earlier.equals("두 번째 요청") && later.equals("첫 번째 요청")));
-            assertEquals(earlier, history.get(0).path("previousContent").asText());
-            assertEquals(later, getJson(path).path("content").asText());
+            assertEquals(1, history.size());
+            assertEquals(original, history.get(0).path("previousContent").asText());
+            assertEquals(success.json().path("content").asText(),
+                history.get(0).path("newContent").asText());
+            HttpResult found = request("GET", path, null);
+            assertEquals(success.json().path("content").asText(), found.json().path("content").asText());
+            assertEquals(success.headers.get("etag"), found.headers.get("etag"));
         } finally {
             try {
                 if (!database.getAutoCommit()) {
@@ -508,15 +603,31 @@ public class BoardApiIT {
         }
     }
 
+    private static HttpResult patchWithCurrentEtag(String path, String body) throws Exception {
+        HttpResult current = request("GET", path, null);
+        assertEquals(200, current.status);
+        assertNotNull(current.headers.get("etag"));
+        return request("PATCH", path, body, current.headers.get("etag"));
+    }
+
     private static HttpResult request(String method, String path, String body) throws Exception {
+        return request(method, path, body, new String[0]);
+    }
+
+    private static HttpResult request(String method, String path, String body, String... ifMatch)
+        throws Exception {
         URL address = new URL(baseUrl);
         byte[] payload = body == null ? new byte[0] : body.getBytes(StandardCharsets.UTF_8);
         try (Socket socket = new Socket(address.getHost(), address.getPort())) {
             socket.setSoTimeout(5000);
+            StringBuilder conditions = new StringBuilder();
+            for (String value : ifMatch) {
+                conditions.append("If-Match: ").append(value).append("\r\n");
+            }
             String headers = method + " " + path + " HTTP/1.0\r\n"
                 + "Host: localhost\r\nAccept: application/json\r\n"
                 + "Content-Type: application/json; charset=UTF-8\r\n"
-                + "Content-Length: " + payload.length + "\r\nConnection: close\r\n\r\n";
+                + conditions + "Content-Length: " + payload.length + "\r\nConnection: close\r\n\r\n";
             OutputStream output = socket.getOutputStream();
             output.write(headers.getBytes(StandardCharsets.US_ASCII));
             output.write(payload);
